@@ -6,6 +6,7 @@
 #include "bpf-restrict-fsaccess.h"
 #include "dbus.h"
 #include "dynamic-user.h"
+#include "extract-word.h"
 #include "fd-util.h"
 #include "fdset.h"
 #include "fileio.h"
@@ -116,6 +117,117 @@ static void manager_serialize_gid_refs(Manager *m, FILE *f) {
         manager_serialize_uid_refs_internal(f, m->gid_refs, "destroy-ipc-gid");
 }
 
+static int serialize_job_running_histograms(FILE *f, const Manager *m) {
+        int r;
+
+        assert(f);
+        assert(m);
+
+        for (JobType t = 0; t < _JOB_TYPE_MAX_IN_TRANSACTION; t++)
+                for (JobResult result = 0; result < _JOB_RESULT_MAX; result++) {
+                        const JobRunningHistogram *h = &m->job_running_histograms[t][result];
+                        _cleanup_free_ char *s = NULL;
+
+                        if (job_running_histogram_is_empty(h))
+                                continue;
+
+                        /* The bucket bounds go along with the counts, so that the counts are dropped rather
+                         * than misattributed should the bounds ever change across a daemon-reexec. */
+                        r = strextendf_with_separator(&s, " ", "%s %s " USEC_FMT,
+                                                      job_type_to_string(t), job_result_to_string(result),
+                                                      h->sum);
+                        if (r < 0)
+                                return r;
+
+                        for (size_t i = 0; i < ELEMENTSOF(job_running_usec_bucket_bounds); i++) {
+                                r = strextendf_with_separator(&s, " ", USEC_FMT ":%" PRIu64,
+                                                              job_running_usec_bucket_bounds[i],
+                                                              h->counts[i]);
+                                if (r < 0)
+                                        return r;
+                        }
+
+                        r = strextendf_with_separator(&s, " ", "%" PRIu64,
+                                                      h->counts[ELEMENTSOF(job_running_usec_bucket_bounds)]);
+                        if (r < 0)
+                                return r;
+
+                        r = serialize_item(f, "job-running-usec-histogram", s);
+                        if (r < 0)
+                                return r;
+                }
+
+        return 0;
+}
+
+static int deserialize_job_running_histogram(Manager *m, const char *value) {
+        _cleanup_free_ char *type = NULL, *result = NULL, *sum = NULL, *overflow = NULL;
+        JobRunningHistogram h = {};
+        const char *p = value;
+        JobType t;
+        JobResult jr;
+        int r;
+
+        assert(m);
+        assert(value);
+
+        r = extract_many_words(&p, /* separators= */ NULL, /* flags= */ 0, &type, &result, &sum);
+        if (r < 0)
+                return r;
+        if (r != 3)
+                return -EINVAL;
+
+        t = job_type_from_string(type);
+        if (t < 0 || t >= _JOB_TYPE_MAX_IN_TRANSACTION)
+                return -EINVAL;
+
+        jr = job_result_from_string(result);
+        if (jr < 0)
+                return -EINVAL;
+
+        r = safe_atou64(sum, &h.sum);
+        if (r < 0)
+                return r;
+
+        for (size_t i = 0; i < ELEMENTSOF(job_running_usec_bucket_bounds); i++) {
+                _cleanup_free_ char *word = NULL, *bound = NULL, *count = NULL;
+                uint64_t b;
+
+                r = extract_first_word(&p, &word, /* separators= */ NULL, /* flags= */ 0);
+                if (r < 0)
+                        return r;
+                if (r == 0)
+                        return -EINVAL;
+
+                r = split_pair(word, ":", &bound, &count);
+                if (r < 0)
+                        return r;
+
+                r = safe_atou64(bound, &b);
+                if (r < 0)
+                        return r;
+                if (b != job_running_usec_bucket_bounds[i])
+                        return -EINVAL;
+
+                r = safe_atou64(count, &h.counts[i]);
+                if (r < 0)
+                        return r;
+        }
+
+        r = extract_first_word(&p, &overflow, /* separators= */ NULL, /* flags= */ 0);
+        if (r < 0)
+                return r;
+        if (r == 0 || !isempty(p))
+                return -EINVAL;
+
+        r = safe_atou64(overflow, &h.counts[ELEMENTSOF(job_running_usec_bucket_bounds)]);
+        if (r < 0)
+                return r;
+
+        m->job_running_histograms[t][jr] = h;
+        return 0;
+}
+
 int manager_serialize(
                 Manager *m,
                 FILE *f,
@@ -137,6 +249,10 @@ int manager_serialize(
         (void) serialize_item_format(f, "current-job-id", "%" PRIu32, m->current_job_id);
         (void) serialize_item_format(f, "n-installed-jobs", "%u", m->n_installed_jobs);
         (void) serialize_item_format(f, "n-failed-jobs", "%u", m->n_failed_jobs);
+        /* Soft-reboot and switch-root start over, so the histogram is not carried into the new cycle, like
+         * the manager timestamps that are measured anew. */
+        if (!switching_root)
+                (void) serialize_job_running_histograms(f, m);
         (void) serialize_bool(f, "taint-logged", m->taint_logged);
         (void) serialize_bool(f, "service-watchdogs", m->service_watchdogs);
 
@@ -645,6 +761,12 @@ int manager_deserialize(Manager *m, FILE *f, FDSet *fds) {
                                 log_notice("Failed to parse failed jobs counter '%s', ignoring.", val);
                         else
                                 m->n_failed_jobs += n;
+
+                } else if ((val = startswith(l, "job-running-usec-histogram="))) {
+                        r = deserialize_job_running_histogram(m, val);
+                        if (r < 0)
+                                log_notice_errno(r, "Failed to parse job running time histogram '%s', ignoring: %m",
+                                                 val);
 
                 } else if ((val = startswith(l, "taint-logged="))) {
                         r = parse_boolean(val);

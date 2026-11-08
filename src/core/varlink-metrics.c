@@ -607,7 +607,7 @@ static const MetricFamily metric_family_table[_MANAGER_METRIC_MAX + 1] = {
         },
         [MANAGER_METRIC_JOB_RUNNING_USEC] = {
                 .name = METRIC_IO_SYSTEMD_MANAGER_PREFIX "JobRunningUSec",
-                .description = "Time jobs spent running, in microseconds, by job type and result",
+                .description = "Time jobs spent running, in microseconds, by job type and result; kept across daemon-reload and daemon-reexec",
                 .type = METRIC_FAMILY_TYPE_HISTOGRAM,
                 .generate = job_running_usec_build_json,
         },

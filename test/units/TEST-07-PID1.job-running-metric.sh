@@ -4,7 +4,7 @@ set -eux
 set -o pipefail
 
 # Verify that the manager counts how long jobs ran in the JobRunningUSec histogram metric, by job type and
-# result.
+# result, and keeps the counts across daemon-reload and daemon-reexec.
 
 SOCKET=/run/systemd/report/io.systemd.Manager
 METRIC=io.systemd.Manager.JobRunningUSec
@@ -75,3 +75,18 @@ check_cells "$WORKDIR/after"
 (( $(cell_count "$WORKDIR/after" stop "done") >= $(cell_count "$WORKDIR/before" stop "done") + 1 ))
 (( $(cell_count "$WORKDIR/after" start failed) >= $(cell_count "$WORKDIR/before" start failed) + 1 ))
 check_kept "$WORKDIR/before" "$WORKDIR/after"
+
+# The counts survive a daemon-reload...
+systemctl daemon-reload
+list_cells >"$WORKDIR/reload"
+check_cells "$WORKDIR/reload"
+check_kept "$WORKDIR/after" "$WORKDIR/reload"
+
+# ... and a daemon-reexec. `systemctl daemon-reexec` returns as soon as the old PID 1 closes its bus
+# connection, before the new PID 1 is up. Ping it over the bus, the broker holds the call until it answers.
+systemctl daemon-reexec
+busctl --watch-bind=yes call org.freedesktop.systemd1 /org/freedesktop/systemd1 \
+                           org.freedesktop.DBus.Peer Ping >/dev/null
+list_cells >"$WORKDIR/reexec"
+check_cells "$WORKDIR/reexec"
+check_kept "$WORKDIR/reload" "$WORKDIR/reexec"
