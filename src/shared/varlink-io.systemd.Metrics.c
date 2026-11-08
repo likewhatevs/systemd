@@ -11,7 +11,9 @@ static SD_VARLINK_DEFINE_ENUM_TYPE(
                 SD_VARLINK_FIELD_COMMENT("A string metric family type"),
                 SD_VARLINK_DEFINE_ENUM_VALUE(string),
                 SD_VARLINK_FIELD_COMMENT("An object metric family type whose value is an arbitrary JSON object"),
-                SD_VARLINK_DEFINE_ENUM_VALUE(object));
+                SD_VARLINK_DEFINE_ENUM_VALUE(object),
+                SD_VARLINK_FIELD_COMMENT("A histogram metric family type whose value is an object describing the distribution of observed values: \"count\" is the number of observations, \"sum\" their sum, and \"buckets\" an array of objects with an inclusive \"upperBound\" and the \"count\" of observations less than or equal to it. Buckets are sorted by strictly increasing bound, the counts are cumulative, and observations above the last bound are only part of the total \"count\". Bounds and sum are in the unit of the metric family, counts are non-negative integers"),
+                SD_VARLINK_DEFINE_ENUM_VALUE(histogram));
 
 static SD_VARLINK_DEFINE_ERROR(NoSuchMetric);
 
@@ -25,7 +27,7 @@ static SD_VARLINK_DEFINE_METHOD_FULL(
                 SD_VARLINK_DEFINE_OUTPUT(object, SD_VARLINK_STRING, SD_VARLINK_NULLABLE),
                 SD_VARLINK_FIELD_COMMENT("Metric fields are values to differentiate between different metrics in the same metric family"),
                 SD_VARLINK_DEFINE_OUTPUT(fields, SD_VARLINK_OBJECT, SD_VARLINK_NULLABLE),
-                SD_VARLINK_FIELD_COMMENT("Metric value"),
+                SD_VARLINK_FIELD_COMMENT("Metric value, with a type depending on the metric family type: a number for counters and gauges, a string, an arbitrary object, or the histogram object described for the histogram family type"),
                 SD_VARLINK_DEFINE_OUTPUT(value, SD_VARLINK_ANY, 0));
 
 static SD_VARLINK_DEFINE_METHOD_FULL(

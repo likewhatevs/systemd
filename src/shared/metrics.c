@@ -55,10 +55,11 @@ int metrics_setup_varlink_server(
 }
 
 static const char * const metric_family_type_table[_METRIC_FAMILY_TYPE_MAX] = {
-        [METRIC_FAMILY_TYPE_COUNTER] = "counter",
-        [METRIC_FAMILY_TYPE_GAUGE]   = "gauge",
-        [METRIC_FAMILY_TYPE_STRING]  = "string",
-        [METRIC_FAMILY_TYPE_OBJECT]  = "object",
+        [METRIC_FAMILY_TYPE_COUNTER]   = "counter",
+        [METRIC_FAMILY_TYPE_GAUGE]     = "gauge",
+        [METRIC_FAMILY_TYPE_STRING]    = "string",
+        [METRIC_FAMILY_TYPE_OBJECT]    = "object",
+        [METRIC_FAMILY_TYPE_HISTOGRAM] = "histogram",
 };
 
 DEFINE_STRING_TABLE_LOOKUP_TO_STRING(metric_family_type, MetricFamilyType);
@@ -245,4 +246,73 @@ int metric_build_send_object(
         assert(sd_json_variant_is_object(value));
 
         return metric_build_send(mf, link, object, value, fields);
+}
+
+void metric_histogram_observe(
+                const uint64_t *upper_bounds,
+                size_t n_buckets,
+                uint64_t *counts,
+                uint64_t *sum,
+                uint64_t value) {
+
+        size_t i;
+
+        assert(upper_bounds);
+        assert(n_buckets > 0);
+        assert(counts);
+        assert(sum);
+
+        for (i = 0; i < n_buckets; i++)
+                if (value <= upper_bounds[i])
+                        break;
+
+        counts[i]++;
+        *sum += value;
+}
+
+int metric_build_send_histogram(
+                const MetricFamily *mf,
+                sd_varlink *link,
+                const char *object,
+                const uint64_t *upper_bounds,
+                size_t n_buckets,
+                const uint64_t *counts,
+                uint64_t sum,
+                sd_json_variant *fields) {
+
+        _cleanup_(sd_json_variant_unrefp) sd_json_variant *buckets = NULL, *v = NULL;
+        uint64_t total = 0;
+        int r;
+
+        assert(mf);
+        assert(link);
+        assert(upper_bounds);
+        assert(n_buckets > 0);
+        assert(counts);
+
+        /* The wire format carries cumulative counts, i.e. each bucket counts all values up to its bound */
+        for (size_t i = 0; i < n_buckets; i++) {
+                assert(i == 0 || upper_bounds[i] > upper_bounds[i-1]);
+
+                total += counts[i];
+
+                r = sd_json_variant_append_arraybo(
+                                &buckets,
+                                SD_JSON_BUILD_PAIR_UNSIGNED("upperBound", upper_bounds[i]),
+                                SD_JSON_BUILD_PAIR_UNSIGNED("count", total));
+                if (r < 0)
+                        return log_debug_errno(r, "Failed to append histogram bucket: %m");
+        }
+
+        total += counts[n_buckets];
+
+        r = sd_json_buildo(
+                        &v,
+                        SD_JSON_BUILD_PAIR_UNSIGNED("count", total),
+                        SD_JSON_BUILD_PAIR_UNSIGNED("sum", sum),
+                        SD_JSON_BUILD_PAIR_VARIANT("buckets", buckets));
+        if (r < 0)
+                return log_debug_errno(r, "Failed to build histogram value: %m");
+
+        return metric_build_send(mf, link, object, v, fields);
 }
