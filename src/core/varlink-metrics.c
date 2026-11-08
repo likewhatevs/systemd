@@ -4,6 +4,7 @@
 #include "sd-varlink.h"
 
 #include "hashmap.h"
+#include "job.h"
 #include "manager.h"
 #include "metrics.h"
 #include "service.h"
@@ -20,6 +21,7 @@ typedef enum ManagerMetric {
         MANAGER_METRIC_UNIT_ACTIVE_STATE,
         MANAGER_METRIC_UNIT_LOAD_STATE,
         MANAGER_METRIC_JOBS_QUEUED,
+        MANAGER_METRIC_JOB_RUNNING_USEC,
         MANAGER_METRIC_N_RESTARTS,
         MANAGER_METRIC_STATUS_ERRNO,
         MANAGER_METRIC_UNITS_BY_LOAD_STATE_TOTAL,
@@ -260,6 +262,45 @@ static int jobs_queued_build_json(const MetricFamily *mf, sd_varlink *vl, void *
                         /* object= */ NULL,
                         hashmap_size(manager->jobs),
                         /* fields= */ NULL);
+}
+
+static int job_running_usec_build_json(const MetricFamily *mf, sd_varlink *vl, void *userdata) {
+        Manager *manager = ASSERT_PTR(userdata);
+        int r;
+
+        assert(mf && mf->name);
+        assert(vl);
+
+        for (JobType t = 0; t < _JOB_TYPE_MAX_IN_TRANSACTION; t++)
+                for (JobResult result = 0; result < _JOB_RESULT_MAX; result++) {
+                        const JobRunningHistogram *h = &manager->job_running_histograms[t][result];
+
+                        /* Most combinations of job type and result never occur, skip those */
+                        if (job_running_histogram_is_empty(h))
+                                continue;
+
+                        _cleanup_(sd_json_variant_unrefp) sd_json_variant *fields = NULL;
+                        r = sd_json_buildo(
+                                        &fields,
+                                        SD_JSON_BUILD_PAIR_STRING("type", job_type_to_string(t)),
+                                        SD_JSON_BUILD_PAIR_STRING("result", job_result_to_string(result)));
+                        if (r < 0)
+                                return r;
+
+                        r = metric_build_send_histogram(
+                                        mf,
+                                        vl,
+                                        /* object= */ NULL,
+                                        job_running_usec_bucket_bounds,
+                                        ELEMENTSOF(job_running_usec_bucket_bounds),
+                                        h->counts,
+                                        h->sum,
+                                        fields);
+                        if (r < 0)
+                                return r;
+                }
+
+        return 0;
 }
 
 static int reload_count_build_json(const MetricFamily *mf, sd_varlink *vl, void *userdata) {
@@ -563,6 +604,12 @@ static const MetricFamily metric_family_table[_MANAGER_METRIC_MAX + 1] = {
                 .description = "Number of jobs currently queued",
                 .type = METRIC_FAMILY_TYPE_GAUGE,
                 .generate = jobs_queued_build_json,
+        },
+        [MANAGER_METRIC_JOB_RUNNING_USEC] = {
+                .name = METRIC_IO_SYSTEMD_MANAGER_PREFIX "JobRunningUSec",
+                .description = "Time jobs spent running, in microseconds, by job type and result",
+                .type = METRIC_FAMILY_TYPE_HISTOGRAM,
+                .generate = job_running_usec_build_json,
         },
         [MANAGER_METRIC_N_RESTARTS] = {
                 .name = METRIC_IO_SYSTEMD_MANAGER_PREFIX "NRestarts",

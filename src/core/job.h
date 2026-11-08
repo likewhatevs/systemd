@@ -75,6 +75,18 @@ typedef enum JobResult {
         _JOB_RESULT_INVALID = -EINVAL,
 } JobResult;
 
+/* Upper bounds, in microseconds, of the buckets of the job running time histograms */
+#define JOB_RUNNING_USEC_N_BUCKETS 13U
+extern const usec_t job_running_usec_bucket_bounds[JOB_RUNNING_USEC_N_BUCKETS];
+
+typedef struct JobRunningHistogram {
+        /* One counter per bucket, plus one for the jobs that ran longer than the last bound */
+        uint64_t counts[JOB_RUNNING_USEC_N_BUCKETS + 1];
+        usec_t sum;
+} JobRunningHistogram;
+
+bool job_running_histogram_is_empty(const JobRunningHistogram *h);
+
 typedef struct JobDependency {
         /* Encodes that the 'subject' job needs the 'object' job in
          * some way. This structure is used only while building a transaction. */

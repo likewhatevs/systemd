@@ -443,6 +443,9 @@ typedef struct Manager {
         unsigned n_installed_jobs;
         unsigned n_failed_jobs;
 
+        /* How long jobs ran before they finished, by job type and result */
+        JobRunningHistogram job_running_histograms[_JOB_TYPE_MAX_IN_TRANSACTION][_JOB_RESULT_MAX];
+
         /* Jobs in progress watching */
         unsigned n_running_jobs;
         unsigned n_on_console;

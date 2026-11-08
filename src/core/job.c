@@ -15,6 +15,7 @@
 #include "job.h"
 #include "log.h"
 #include "manager.h"
+#include "metrics.h"
 #include "parse-util.h"
 #include "prioq.h"
 #include "serialize.h"
@@ -1013,6 +1014,32 @@ static void job_fail_dependencies(Unit *u, UnitDependencyAtom match_atom) {
         }
 }
 
+const usec_t job_running_usec_bucket_bounds[JOB_RUNNING_USEC_N_BUCKETS] = {
+        100,
+        300,
+        1 * USEC_PER_MSEC,
+        3 * USEC_PER_MSEC,
+        10 * USEC_PER_MSEC,
+        30 * USEC_PER_MSEC,
+        100 * USEC_PER_MSEC,
+        300 * USEC_PER_MSEC,
+        1 * USEC_PER_SEC,
+        3 * USEC_PER_SEC,
+        10 * USEC_PER_SEC,
+        30 * USEC_PER_SEC,
+        100 * USEC_PER_SEC,
+};
+
+bool job_running_histogram_is_empty(const JobRunningHistogram *h) {
+        assert(h);
+
+        FOREACH_ELEMENT(c, h->counts)
+                if (*c > 0)
+                        return false;
+
+        return true;
+}
+
 int job_finish_and_invalidate(Job *j, JobResult result, bool recursive, bool already) {
         Unit *u, *other;
         JobType t;
@@ -1025,6 +1052,21 @@ int job_finish_and_invalidate(Job *j, JobResult result, bool recursive, bool alr
         t = j->type;
 
         j->result = result;
+
+        /* Count how long the job ran before it finished. Jobs that never ran, and jobs that found the unit
+         * already in the requested state (which don't get a completion message either), are not counted. A
+         * restart job is counted twice: as "restart" when its stop phase finishes here, and as "start" when
+         * it finishes again after having been patched into a start job below. */
+        if (j->state == JOB_RUNNING && !already && timestamp_is_set(j->begin_running_usec)) {
+                JobRunningHistogram *h = &j->manager->job_running_histograms[t][result];
+
+                metric_histogram_observe(
+                                job_running_usec_bucket_bounds,
+                                ELEMENTSOF(job_running_usec_bucket_bounds),
+                                h->counts,
+                                &h->sum,
+                                usec_sub_unsigned(now(CLOCK_MONOTONIC), j->begin_running_usec));
+        }
 
         job_set_state(j, JOB_FINISHED);
 
